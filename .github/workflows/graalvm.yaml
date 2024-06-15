@@ -115,7 +115,12 @@ jobs:
         mkdir -p build/upx
         srcdir=build/native/nativeCompile
         exe=ol2config
-        ls -l "$srcdir"
+        if [ -d "$srcdir" ]
+        then
+          ls -l "$srcdir"
+          ldd $srcdir/*
+          echo ""
+        fi
         if [ -x "${srcdir}/${exe}" ]
         then
           upx -7 --best -v -o "build/upx/$exe" "$srcdir/$exe"
