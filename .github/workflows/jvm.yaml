@@ -1,0 +1,112 @@
+name: CI-jvm-build
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    # * is a special character in YAML
+    # setup monthly background build
+    - cron: '15 4 14 * *'
+
+jobs:
+  jvm-build:
+    strategy:
+      max-parallel: 3
+      matrix:
+        os: [ubuntu-latest]
+        jvm: ['21']
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    environment: CI
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: ${{ matrix.jvm }}
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Setup PATH
+      run: |
+        echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+        # We add to path so Windows has a chance of working the same
+        echo "$GITHUB_WORKSPACE" >> $GITHUB_PATH
+
+    - name: Report Build Environment
+      run: |
+        echo "JAVA_HOME: $JAVA_HOME"
+        echo ""
+        java --version
+        echo ""
+        gradlew -version
+        echo ""
+
+    # We make a dependency check pass to pull in and resolve all dependencies (maybe requiring access tokens)
+    - name: 'Gradle: refresh-dependencies'
+      env:
+        GITHUB_USERNAME: ${{ github.actor }}
+        GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+      run: gradlew --refresh-dependencies clean
+
+    - name: 'Gradle: assemble'
+      run: gradlew assemble
+
+    - name: 'Gradle: fatJar'
+      run: gradlew fatJar
+
+    - name: 'Gradle: check'
+      run: gradlew check
+
+    - name: Report Outputs build
+      run: find build
+
+    - name: Upload - prepare
+      #if: ${{ matrix.os == 'ubuntu-latest' }}
+      shell: bash
+      run: |
+        mkdir dist
+        find build/distributions build/libs -maxdepth 1 \( -name "*.jar" -or -name "*.tar" -or -name "*.zip" \) -type f -exec cp -av {} dist/ \;
+
+    - name: Report Outputs build
+      run: |
+        ls -l --full-time dist | tail -n +2 >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        # FIXME we really want just a package summary
+        find build/libs -maxdepth 1 -name "*-uber.jar" -exec jar -tf {} \; | egrep "(^[^/]*\w[^/]+|tooling/.*|MF|/)$" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        gradlew dependencies >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload - perform
+      uses: actions/upload-artifact@v4
+      with:
+        name: jvm-${{ matrix.jvm }}-${{ matrix.os }}-artifacts
+        path: dist/
+        if-no-files-found: error
+
+
+  jvm-dependency-submission:
+    needs: [jvm-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Generate and submit dependency graph
+      uses: gradle/actions/dependency-submission@v3
+      with:
+        build-scan-publish: true
+        build-scan-terms-of-use-url: "https://gradle.com/terms-of-service"
+        build-scan-terms-of-use-agree: "yes"
