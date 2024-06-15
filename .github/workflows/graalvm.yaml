@@ -1,0 +1,165 @@
+name: CI-graalvm-build
+
+on:
+  push:
+  workflow_dispatch:
+  schedule:
+    # * is a special character in YAML
+    # setup monthly background build
+    - cron: '05 4 14 * *'
+
+jobs:
+  graalvm-build:
+    strategy:
+      max-parallel: 3
+      matrix:
+        os: [ubuntu-latest]
+        jvm: ['21'] #, '22-ea']
+      fail-fast: false
+    runs-on: ${{ matrix.os }}
+    environment: CI
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup GraalVM
+      uses: graalvm/setup-graalvm@v1
+      with:
+        java-version: ${{ matrix.jvm }}      # See 'Options' section below for all supported versions
+        distribution: 'graalvm-community' # See 'Options' section below for all available distributions
+        cache: gradle
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        native-image-musl: false
+        native-image-job-reports: false # graalvm-ce does not support
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+
+    - name: Install UPX
+      # https://github.com/crazy-max/ghaction-upx/commit/0fc45e912669ba9e8fa2b430e97c8da2a632e29b
+      # v3.0.0 2023-09-23
+      #uses: crazy-max/ghaction-upx@v2
+      uses: crazy-max/ghaction-upx@0fc45e912669ba9e8fa2b430e97c8da2a632e29b
+      with:
+        install-only: true
+
+    - name: Setup PATH
+      run: |
+        echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+        # We add to path so Windows has a chance of working the same
+        echo "$GITHUB_WORKSPACE" >> $GITHUB_PATH
+
+        # This seems needed to override the system java, even though
+        #  set-java-home='true' is the default for graalvm/setup-graalvm
+        if [ -d "$GRAALVM_HOME/bin" ]
+        then
+          echo "$GRAALVM_HOME/bin" >> $GITHUB_PATH
+        fi
+        ls -lad "$GRAALVM_HOME"
+        ls -lad "$GRAALVM_HOME/bin"
+        ls -la "$GRAALVM_HOME"
+        ls -la "$GRAALVM_HOME/bin"
+
+    - name: Report Build Environment
+      run: |
+        echo "GRAALVM_HOME: $GRAALVM_HOME"
+        echo "JAVA_HOME: $JAVA_HOME"
+        echo ""
+        java --version
+        echo ""
+        native-image --version
+        echo ""
+        if which gu 2>/dev/null
+        then
+          gu list -v
+        else
+          echo "gu: tool not found in PATH"
+        fi
+        echo ""
+        gradlew -version
+        echo ""
+        if which upx 2>/dev/null
+        then
+          upx --version
+        else
+          echo "upx: tool not found in PATH"
+        fi
+        echo ""
+
+    # We make a dependency check pass to pull in and resolve all dependencies (maybe requiring access tokens)
+    - name: 'Gradle: refresh-dependencies'
+      env:
+        GITHUB_USERNAME: ${{ github.actor }}
+        GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+      run: gradlew --refresh-dependencies clean
+
+    - name: 'Gradle: assemble'
+      run: gradlew assemble
+
+    - name: 'Gradle: check'
+      run: gradlew check
+
+    - name: 'Gradle: nativeCompile'
+      run: gradlew nativeCompile
+
+    - name: Report Outputs build
+      run: find build
+
+      # FIXME move to use gradle task
+    - name: UPX
+      run: |
+        mkdir -p build/upx
+        srcdir=build/native/nativeCompile
+        exe=ol2config
+        ls -l "$srcdir"
+        if [ -x "${srcdir}/${exe}" ]
+        then
+          upx -7 --best -v -o "build/upx/$exe" "$srcdir/$exe"
+        fi
+
+    - name: Upload - prepare
+      #if: ${{ matrix.os == 'ubuntu-latest' }}
+      shell: bash
+      run: |
+        mkdir dist
+        exe=ol2config
+        find build/native/nativeCompile -maxdepth 1 \( -name "*.exe" -or -name "$exe" \) -type f -exec cp -av {} dist/ \;
+        if [ -d "build/upx" ]
+        then
+          mkdir -p dist/upx
+          find build/upx -maxdepth 1 -type f -exec cp -av {} dist/upx/ \;
+        fi
+
+    - name: Report Outputs build
+      run: |
+        ls -l --full-time dist | tail -n +2 >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload - perform
+      uses: actions/upload-artifact@v4
+      with:
+        name: graalvm-${{ matrix.jvm }}-${{ matrix.os }}-artifacts
+        path: dist/
+        if-no-files-found: error
+
+
+  graalvm-dependency-submission:
+    needs: [graalvm-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Generate and submit dependency graph
+      uses: gradle/actions/dependency-submission@v3
+      with:
+        build-scan-publish: true
+        build-scan-terms-of-use-url: "https://gradle.com/terms-of-service"
+        build-scan-terms-of-use-agree: "yes"
