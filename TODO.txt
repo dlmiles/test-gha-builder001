@@ -1,0 +1,94 @@
+
+original JVM project (jar release)
+GraalVM EXE generation (exe, a.out, macosx)
+jbang (descriptors, URL, scripts)
+GHA consumer (composite action, actions, resolve method JVM, jbang, native)
+GHA-uber-tools-docker (JDK21, all jars, )
+
+
+
+--keep-comments (default)
+--remove-comments
+
+--pretty
+	pretty formatter (with extra whitespaces)
+--readable
+	with EOLs
+--compact
+	compact formatter (no extra whitespaces or EOLs)
+
+--tcl
+--json
+--jsonc
+--json5
+--properties
+--shell-bash
+--shell-csh
+	output format
+	outputs designed to allow use of grep to filter
+
+--auto
+	if config.yaml, this is authoritative
+	if config.json5, this is authoritative
+	if config.jsonc, this is authoritative
+
+	if config.json, this is authoritative (only when output is not --json)
+
+	if multiple authoritative source files are found, warn about existence, confirm which input selected
+
+--force
+	update even if uptodate
+
+--check
+	compare and report on contents match
+	report on equivalence in data match, but also output if exactly a byte-wise match
+
+--openlane1  --ol1
+--openlane2  --ol2
+	auto-select of output format (lowest priority)
+	allow for quirks modes
+
+--warn
+--validate
+
+
+The JsonC and Json5 features are considered nice to have for free.
+
+
+
+
+DEF editor snippet:
+	load existing template
+	remove tracks outside BBox, or fixed count
+	edit track lengths?
+	edit port locations
+	add ports (from list, evenly spaced/pattern gap)
+	routing grid info
+		follow cell area
+		remove from LHS/RHS power rails
+	mark power rail ports
+		standard unithd pattern
+		total height as-%, start/finish, start/offset/direction
+
+Truffle TCL ?
+JNI TCL ?
+JNI Tk ?
+
+MAGIC editors:
+	load layout
+	confirm layout
+	confirm port locations
+	confirm routing blockages / any use of layer in rect+allowance
+
+	bus-router
+	corner-router (via stack patterns)
+	router
+
+
+Gradle target generate resource for autocomplete
+
+GHA
+    build for JRE21 (JRE8)
+    build fatjar
+    build dist.zip / dist.tar.xz
+    build for win32, win64, linux32 (+static), linux64 (+static)
