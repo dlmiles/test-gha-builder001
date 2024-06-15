@@ -13,7 +13,8 @@ jobs:
     strategy:
       max-parallel: 3
       matrix:
-        os: [ubuntu-latest]
+        # no GHA: linux-aarch64
+        os: ['ubuntu-latest', 'windows-latest', 'macos-13', 'macos-latest']
         jvm: ['21'] #, '22-ea']
       fail-fast: false
     runs-on: ${{ matrix.os }}
@@ -40,6 +41,8 @@ jobs:
       uses: gradle/actions/setup-gradle@v3
 
     - name: Install UPX
+      # FIXME use a different method
+      if: ${{ matrix.os != 'macos-13' && matrix.os != 'macos-latest' }}
       # https://github.com/crazy-max/ghaction-upx/commit/0fc45e912669ba9e8fa2b430e97c8da2a632e29b
       # v3.0.0 2023-09-23
       #uses: crazy-max/ghaction-upx@v2
@@ -48,6 +51,7 @@ jobs:
         install-only: true
 
     - name: Setup PATH
+      if: ${{ matrix.os != 'windows-latest' }}
       run: |
         echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
         # We add to path so Windows has a chance of working the same
@@ -64,10 +68,36 @@ jobs:
         ls -la "$GRAALVM_HOME"
         ls -la "$GRAALVM_HOME/bin"
 
+    - name: Setup PATH (windows-latest)
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: |
+        echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+        # We add to path so Windows has a chance of working the same
+        echo "$GITHUB_WORKSPACE" | Out-File -Append $Env:GITHUB_PATH
+
+        # This seems needed to override the system java, even though
+        #  set-java-home='true' is the default for graalvm/setup-graalvm
+        $BinFolder = "$Env:GRAALVM_HOME\\bin"
+        if ( Test-Path -Path $BinFolder ) {
+          echo "$Env:GRAALVM_HOME/bin" | Out-File -Append $Env:GITHUB_PATH
+        }
+        dir "$Env:GRAALVM_HOME"
+        dir "$Env:GRAALVM_HOME\\bin"
+
+        Set-Alias gradlew "$Env:GITHUB_WORKSPACE\\gradlew.bat" -option ReadOnly
+
     - name: Report Build Environment
+      if: ${{ matrix.os != 'windows-latest' }}
       run: |
         echo "GRAALVM_HOME: $GRAALVM_HOME"
         echo "JAVA_HOME: $JAVA_HOME"
+        echo ""
+        uname -a
+        uname -s
+        uname -o
+        uname -p
+        uname -m
+        uname -i 2>/dev/null || true # !macos
         echo ""
         java --version
         echo ""
@@ -85,9 +115,57 @@ jobs:
         if which upx 2>/dev/null
         then
           upx --version
+          echo "HAVE_UPX=1" >> $GITHUB_ENV
         else
           echo "upx: tool not found in PATH"
+          echo "HAVE_UPX=0" >> $GITHUB_ENV
         fi
+        echo ""
+
+    - name: Report Build Environment (windows-latest)
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: |
+        echo "GRAALVM_HOME: $Env:GRAALVM_HOME"
+        echo "JAVA_HOME: $Env:JAVA_HOME"
+        echo ""
+        java --version
+        echo ""
+        native-image --version
+        echo ""
+        if ( (Get-Command gu).Path ) {
+          gu list -v
+        } else {
+          echo "gu: tool not found in PATH"
+        }
+        echo ""
+        Set-Alias gradlew "$Env:GITHUB_WORKSPACE\\gradlew.bat" -option ReadOnly
+        gradlew -version
+        echo ""
+        try {
+          if ( (Get-Command upx).Path ) {
+            upx --version
+            echo "HAVE_UPX=1" | Out-File -Append $Env:GITHUB_ENV
+          } else {
+            echo "upx: tool not found in PATH"
+            echo "HAVE_UPX=0" | Out-File -Append $Env:GITHUB_ENV
+          }
+        } catch {
+          echo "upx: tool not found in PATH"
+          echo "HAVE_UPX=0" | Out-File -Append $Env:GITHUB_ENV
+        }
+        echo ""
+        try {
+          if ( (Get-Command dumpbin).Path ) {
+            dumpbin /?
+            echo "HAVE_DUMPBIN=1" | Out-File -Append $Env:GITHUB_ENV
+          } else {
+            echo "dumpbin: tool not found in PATH"
+            echo "HAVE_DUMPBIN=0" | Out-File -Append $Env:GITHUB_ENV
+          }
+        } catch {
+          echo "dumpbin: tool not found in PATH"
+          echo "HAVE_DUMPBIN=0" | Out-File -Append $Env:GITHUB_ENV
+        }
         echo ""
 
     # We make a dependency check pass to pull in and resolve all dependencies (maybe requiring access tokens)
@@ -95,22 +173,29 @@ jobs:
       env:
         GITHUB_USERNAME: ${{ github.actor }}
         GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
-      run: gradlew --refresh-dependencies clean
+      run: ./gradlew --refresh-dependencies clean
 
     - name: 'Gradle: assemble'
-      run: gradlew assemble
+      run: ./gradlew assemble
 
     - name: 'Gradle: check'
-      run: gradlew check
+      run: ./gradlew check
 
     - name: 'Gradle: nativeCompile'
-      run: gradlew nativeCompile
+      run: ./gradlew nativeCompile
 
-    - name: Report Outputs build
+    - name: Show Build Outputs
+      if: ${{ matrix.os != 'windows-latest' }}
       run: find build
+
+    - name: Show Build Outputs (windows-latest)
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: |
+        dir -Recurse build
 
       # FIXME move to use gradle task
     - name: UPX
+      if: ${{ matrix.os != 'windows-latest' }}
       run: |
         mkdir -p build/upx
         srcdir=build/native/nativeCompile
@@ -118,19 +203,44 @@ jobs:
         if [ -d "$srcdir" ]
         then
           ls -l "$srcdir"
-          ldd $srcdir/*
+          # linux
+          ldd $srcdir/* 2>/dev/null || true
+          # macosx
+          otool -L $srcdir/* 2>/dev/null || true
           echo ""
         fi
-        if [ -x "${srcdir}/${exe}" ]
+        if [ ${HAVE_UPX:-0} -ge 1 ] && [ -x "${srcdir}/${exe}" ]
         then
           upx -7 --best -v -o "build/upx/$exe" "$srcdir/$exe"
         fi
 
+      # FIXME move to use gradle task
+    - name: UPX (windows-latest)
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: |
+        mkdir -p "build\\upx"
+        $srcdir = "build\\native\\nativeCompile"
+        $exe = "ol2config.exe"
+        if ( Test-Path -Path $srcdir ) {
+          dir "$srcdir"
+          if ( $Env:HAVE_DUMPBIN -eq "1" ) {
+            # windows
+            dumpbin /dependents "${srcdir}\\${exe}"
+            dumpbin /imports "${srcdir}\\${exe}"
+            echo ""
+          }
+        }
+        if ( Test-Path -Path "${srcdir}\\${exe}" ) {
+          if ( $Env:HAVE_UPX -eq "1" ) {
+            upx -7 --best -v -o "build\\upx\\$exe" "$srcdir\\$exe"
+          }
+        }
+
     - name: Upload - prepare
-      #if: ${{ matrix.os == 'ubuntu-latest' }}
-      shell: bash
+      if: ${{ matrix.os != 'windows-latest' }}
       run: |
         mkdir dist
+        # FIXME emit same JAR/TAR/ZIP from ubuntu-latest (into its own archive?)
         exe=ol2config
         find build/native/nativeCompile -maxdepth 1 \( -name "*.exe" -or -name "$exe" \) -type f -exec cp -av {} dist/ \;
         if [ -d "build/upx" ]
@@ -139,10 +249,35 @@ jobs:
           find build/upx -maxdepth 1 -type f -exec cp -av {} dist/upx/ \;
         fi
 
-    - name: Report Outputs build
+    - name: Upload - prepare (windows-latest)
+      if: ${{ matrix.os == 'windows-latest' }}
       run: |
-        ls -l --full-time dist | tail -n +2 >> $GITHUB_STEP_SUMMARY
+        mkdir dist
+        $exe = "ol2config.exe"
+        dir -Include "*.exe" "build\\native\\nativeCompile"
+        copy -Path "build\\native\\nativeCompile\\*" -Recurse -Include "*.exe" -Destination "dist"
+        if ( Test-Path -Path "build\\upx" ) {
+          mkdir -p "dist\\upx"
+          copy -Path "build\\upx\\*" -Recurse -Include "*.exe" -Destination "dist\\upx"
+        }
+
+    - name: Report Outputs build
+      if: ${{ matrix.os != 'windows-latest' }}
+      run: |
+        if [[ $(uname -s) == Darwin* ]]
+        then
+          ls_args=''
+        else
+          ls_args='--full-time'
+        fi
+        ls -l $ls_args dist | tail -n +2 >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
+
+    - name: Report Outputs build (windows-latest)
+      if: ${{ matrix.os == 'windows-latest' }}
+      run: |
+        dir -Recurse dist | Out-File -Append $Env:GITHUB_STEP_SUMMARY
+        echo "" | Out-File -Append $Env:GITHUB_STEP_SUMMARY
 
     - name: Upload - perform
       uses: actions/upload-artifact@v4
